@@ -64,7 +64,7 @@ jobs:
         EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       run: |
         echo "开始构建 Android APK..."
-        eas build --platform android --profile production --non-interactive --output ./baby-feeding-tracker.apk
+        eas build --platform android --profile production --non-interactive
         
     - name: Upload APK as artifact
       uses: actions/upload-artifact@v4
