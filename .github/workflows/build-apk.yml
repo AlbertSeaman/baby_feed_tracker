@@ -1,0 +1,68 @@
+name: Build and Release APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  NODE_VERSION: '18'
+  EXPO_VERSION: 'latest'
+
+jobs:
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: |
+        npm ci
+        npm install -g eas-cli@${{ env.EXPO_VERSION }} expo@${{ env.EXPO_VERSION }}
+        
+    - name: Setup Expo
+      run: |
+        eas login --token ${{ secrets.EXPO_TOKEN }}
+      env:
+        EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        
+    - name: Configure project for EAS
+      run: |
+        # 如果没有projectId，先创建
+        if ! grep -q "projectId" app.json; then
+          echo "配置EAS项目..."
+          eas init --id --non-interactive
+        fi
+        
+    - name: Build Android APK
+      run: |
+        eas build --platform android --profile production --non-interactive --output ./baby-feeding-tracker.apk
+        
+    - name: Upload APK as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: baby-feeding-tracker-apk
+        path: ./baby-feeding-tracker.apk
+        retention-days: 90
+        
+    - name: Create GitHub Release
+      if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ./baby-feeding-tracker.apk
+        name: "宝宝喂养记录 v1.0.0"
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
