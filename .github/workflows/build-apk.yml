@@ -31,22 +31,39 @@ jobs:
         npm ci
         npm install -g eas-cli@${{ env.EXPO_VERSION }} expo@${{ env.EXPO_VERSION }}
         
-    - name: Setup Expo
-      run: |
-        eas login --token ${{ secrets.EXPO_TOKEN }}
+    - name: Setup Expo and Configure EAS Project
       env:
         EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-        
-    - name: Configure project for EAS
       run: |
-        # 如果没有projectId，先创建
-        if ! grep -q "projectId" app.json; then
-          echo "配置EAS项目..."
-          eas init --id --non-interactive
+        # 显示当前目录和文件结构（调试用）
+        echo "当前目录:"
+        pwd
+        echo "文件列表:"
+        ls -la
+        
+        # 检查是否已配置 EAS 项目
+        echo "检查 app.json 文件..."
+        if [ -f "app.json" ]; then
+          echo "app.json 内容:"
+          cat app.json | head -20
+          
+          # 检查 projectId
+          if grep -q "projectId" app.json; then
+            echo "✅ 项目已有 EAS projectId，跳过初始化。"
+          else
+            echo "🔄 项目没有 EAS projectId，正在初始化..."
+            eas init --id --non-interactive
+          fi
+        else
+          echo "❌ 错误：未找到 app.json 文件"
+          exit 1
         fi
         
     - name: Build Android APK
+      env:
+        EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       run: |
+        echo "开始构建 Android APK..."
         eas build --platform android --profile production --non-interactive --output ./baby-feeding-tracker.apk
         
     - name: Upload APK as artifact
