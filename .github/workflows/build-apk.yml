@@ -1,76 +1,107 @@
-name: Build and Release APK
+name: 构建 Android APK
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:  # 允许手动触发
 
 env:
   NODE_VERSION: '18'
-  EXPO_VERSION: 'latest'
 
 jobs:
   build-android:
-    name: Build Android APK
+    name: 构建 APK
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout repository
+    - name: 检出代码
       uses: actions/checkout@v4
       
-    - name: Setup Node.js
+    - name: 设置 Node.js 环境
       uses: actions/setup-node@v4
       with:
         node-version: ${{ env.NODE_VERSION }}
         cache: 'npm'
         
-    - name: Install dependencies
+    - name: 安装依赖
       run: |
         npm ci
-        npm install -g eas-cli@${{ env.EXPO_VERSION }} expo@${{ env.EXPO_VERSION }}
+        npm install -g eas-cli
         
-    - name: Setup Expo and Configure EAS Project
+    - name: 配置 Expo 和 EAS 项目
       env:
         EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       run: |
-        # 显示当前目录和文件结构（调试用）
-        echo "当前目录:"
-        pwd
-        echo "文件列表:"
-        ls -la
+        echo "=== 验证环境 ==="
+        # 验证 Token 有效
+        eas whoami
         
-        # 检查是否已配置 EAS 项目
-        echo "检查 app.json 文件..."
-        if [ -f "app.json" ]; then
-          echo "app.json 内容:"
-          cat app.json | head -20
-          
-          # 检查 projectId
-          if grep -q "projectId" app.json; then
-            echo "✅ 项目已有 EAS projectId，跳过初始化。"
-          else
-            echo "🔄 项目没有 EAS projectId，正在初始化..."
-            eas init --id --non-interactive
-          fi
-        else
-          echo "❌ 错误：未找到 app.json 文件"
+        echo "=== 检查项目配置 ==="
+        # 确保有必要的配置文件
+        if [ ! -f "app.json" ]; then
+          echo "❌ 错误：缺少 app.json 文件"
           exit 1
         fi
         
-    - name: Build Android APK
+        # 如果有 eas.json 则跳过，否则创建基础配置
+        if [ ! -f "eas.json" ]; then
+          echo "创建基础 EAS 配置..."
+          echo '{"cli":{"version":">=6.0.0","appVersionSource":"remote"},"build":{"production":{}}}' > eas.json
+        fi
+        
+    - name: 提交云端构建任务
       env:
         EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       run: |
-        echo "开始构建 Android APK..."
-        eas build --platform android --profile production --non-interactive
+        echo "=== 提交 Android 构建任务到 EAS ==="
         
-    - name: Upload APK as artifact
+        # 提交构建，并等待完成（--wait 参数）
+        eas build --platform android --profile production --non-interactive --wait
+        
+        echo "✅ 构建任务已完成！"
+        
+    - name: 下载并重命名 APK
+      env:
+        EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      run: |
+        echo "=== 下载构建好的 APK ==="
+        
+        # 方法1：使用最新的构建ID下载
+        echo "查找最新完成的构建..."
+        BUILD_JSON=$(eas build:list --platform android --status finished --limit 1 --json)
+        
+        if [ -z "$BUILD_JSON" ] || [ "$BUILD_JSON" = "[]" ]; then
+          echo "❌ 未找到已完成的构建"
+          echo "请手动下载：https://expo.dev/accounts/AlbertSeaman/projects/baby-feed-tracker/builds"
+          exit 1
+        fi
+        
+        # 提取构建ID
+        BUILD_ID=$(echo "$BUILD_JSON" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        echo "找到构建 ID: $BUILD_ID"
+        
+        # 下载 APK
+        eas build:download --id "$BUILD_ID" --output ./baby-feeding-tracker.apk
+        
+        # 验证文件存在
+        if [ -f "./baby-feeding-tracker.apk" ]; then
+          echo "✅ APK 下载成功！"
+          ls -lh ./baby-feeding-tracker.apk
+        else
+          echo "❌ 文件下载失败"
+          exit 1
+        fi
+        
+    - name: 上传 APK 供下载
       uses: actions/upload-artifact@v4
       with:
         name: baby-feeding-tracker-apk
-        path: ./baby-feeding-tracker.apk
+        path: ./baby-feeding-tracker.apk  # 与下载步骤的文件名一致
         retention-days: 90
         
-    
+    - name: 显示成功信息
+      run: |
+        echo "🎉 构建流程全部完成！"
+        echo "下载 APK 方式："
+        echo "1. 在此页面底部的 'Artifacts' 区域下载"
+        echo "2. 或访问 Expo 控制台：https://expo.dev/accounts/AlbertSeaman/projects/baby-feed-tracker/builds"
