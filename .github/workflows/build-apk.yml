@@ -12,6 +12,7 @@ jobs:
   build-android:
     name: 构建 APK
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # 增加超时设置
     
     steps:
     - name: 检出代码
@@ -33,17 +34,14 @@ jobs:
         EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       run: |
         echo "=== 验证环境 ==="
-        # 验证 Token 有效
-        eas whoami
+        eas whoami || { echo "❌ Expo 认证失败"; exit 1; }
         
         echo "=== 检查项目配置 ==="
-        # 确保有必要的配置文件
         if [ ! -f "app.json" ]; then
           echo "❌ 错误：缺少 app.json 文件"
           exit 1
         fi
         
-        # 如果有 eas.json 则跳过，否则创建基础配置
         if [ ! -f "eas.json" ]; then
           echo "创建基础 EAS 配置..."
           echo '{"cli":{"version":">=6.0.0","appVersionSource":"remote"},"build":{"production":{}}}' > eas.json
@@ -52,58 +50,66 @@ jobs:
     - name: 提交云端构建任务并等待完成
       env:
         EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-      id: build-step  # 给这个步骤一个ID，便于后续引用
+      id: build-step
       run: |
         echo "=== 提交 Android 构建任务到 EAS ==="
         
-        # 提交构建，并等待完成（--wait 参数）
-        # 同时捕获输出，提取构建ID
+        # 提交构建，并等待完成
         BUILD_OUTPUT=$(eas build --platform android --profile production --non-interactive --wait 2>&1)
         echo "$BUILD_OUTPUT"
         
-        # 从输出中提取构建ID（用于后续下载）
+        # 从输出中提取构建ID
         BUILD_ID=$(echo "$BUILD_OUTPUT" | grep -o "builds/[a-f0-9-]*" | head -1 | cut -d'/' -f2)
         if [ -n "$BUILD_ID" ]; then
           echo "构建ID: $BUILD_ID"
           echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
         fi
         
-        # 从输出中提取直接下载链接
-        APK_URL=$(echo "$BUILD_OUTPUT" | grep -o "https://expo.dev/artifacts/eas/[^ ]*\.apk" | head -1)
+        # 从输出中提取直接下载链接（改进的提取）
+        APK_URL=$(echo "$BUILD_OUTPUT" | grep -o "https://expo\.dev/artifacts/eas/[a-zA-Z0-9]*\.apk" | head -1)
+        if [ -z "$APK_URL" ]; then
+          APK_URL=$(echo "$BUILD_OUTPUT" | grep "Android app:" | grep -o "https://[^ ]*\.apk" | head -1)
+        fi
+        
         if [ -n "$APK_URL" ]; then
           echo "APK直接下载链接: $APK_URL"
           echo "apk_url=$APK_URL" >> $GITHUB_OUTPUT
         fi
         
-        echo "✅ 构建任务已完成！"
+        # 检查是否真的构建成功
+        if echo "$BUILD_OUTPUT" | grep -q "Build finished"; then
+          echo "✅ 构建任务已完成！"
+        else
+          echo "⚠️  构建可能未完成"
+        fi
         
     - name: 下载 APK 文件
-      env:
-        EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       run: |
         echo "=== 下载构建好的 APK ==="
         
-        # 方法1：如果有构建ID，使用构建ID下载
-        if [ -n "${{ steps.build-step.outputs.build_id }}" ]; then
-          echo "使用构建ID下载: ${{ steps.build-step.outputs.build_id }}"
-          eas build:download --id "${{ steps.build-step.outputs.build_id }}" --output ./baby-feeding-tracker.apk
-        fi
+        APK_URL="${{ steps.build-step.outputs.apk_url }}"
         
-        # 方法2：如果方法1失败或没有构建ID，检查是否有直接下载链接
-        if [ ! -f "./baby-feeding-tracker.apk" ] && [ -n "${{ steps.build-step.outputs.apk_url }}" ]; then
-          echo "使用直接链接下载..."
-          curl -L "${{ steps.build-step.outputs.apk_url }}" -o ./baby-feeding-tracker.apk
-        fi
-        
-        # 验证文件存在
-        if [ -f "./baby-feeding-tracker.apk" ]; then
-          echo "✅ APK 下载成功！文件大小:"
-          ls -lh ./baby-feeding-tracker.apk
+        if [ -n "$APK_URL" ]; then
+          echo "从直接链接下载: $APK_URL"
+          # 添加重试和进度显示
+          curl -L --retry 3 --retry-delay 5 --progress-bar "$APK_URL" -o ./baby-feeding-tracker.apk
+          
+          if [ -f "./baby-feeding-tracker.apk" ]; then
+            FILE_SIZE=$(stat -c%s "./baby-feeding-tracker.apk")
+            if [ "$FILE_SIZE" -gt 1000000 ]; then  # 大于1MB才认为有效
+              echo "✅ APK 下载成功！大小: $((FILE_SIZE/1024/1024))MB"
+              ls -lh ./baby-feeding-tracker.apk
+            else
+              echo "❌ 下载的文件太小，可能不完整"
+              rm -f ./baby-feeding-tracker.apk
+            fi
+          else
+            echo "❌ 下载失败，文件未创建"
+          fi
         else
-          echo "⚠️  无法自动下载APK"
-          echo "请手动从以下链接下载："
-          echo "${{ steps.build-step.outputs.apk_url }}"
-          echo "或访问：https://expo.dev/accounts/AlbertSeaman/projects/baby-feed-tracker/builds"
+          echo "⚠️  没有找到APK下载链接"
+          echo "请访问 Expo 控制台手动下载："
+          echo "https://expo.dev/accounts/AlbertSeaman/projects/baby-feed-tracker/builds"
         fi
         
     - name: 上传 APK 供下载
@@ -123,7 +129,9 @@ jobs:
           echo ""
           echo "下载 APK 方式："
           echo "1. 在此页面底部的 'Artifacts' 区域下载"
-          echo "2. 直接链接：${{ steps.build-step.outputs.apk_url }}"
+          if [ -n "${{ steps.build-step.outputs.apk_url }}" ]; then
+            echo "2. 直接链接：${{ steps.build-step.outputs.apk_url }}"
+          fi
           echo "3. Expo 控制台：https://expo.dev/accounts/AlbertSeaman/projects/baby-feed-tracker/builds"
         else
           echo "⚠️  构建过程中出现问题"
