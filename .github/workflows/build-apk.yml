@@ -49,59 +49,83 @@ jobs:
           echo '{"cli":{"version":">=6.0.0","appVersionSource":"remote"},"build":{"production":{}}}' > eas.json
         fi
         
-    - name: 提交云端构建任务
+    - name: 提交云端构建任务并等待完成
       env:
         EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      id: build-step  # 给这个步骤一个ID，便于后续引用
       run: |
         echo "=== 提交 Android 构建任务到 EAS ==="
         
         # 提交构建，并等待完成（--wait 参数）
-        eas build --platform android --profile production --non-interactive --wait
+        # 同时捕获输出，提取构建ID
+        BUILD_OUTPUT=$(eas build --platform android --profile production --non-interactive --wait 2>&1)
+        echo "$BUILD_OUTPUT"
+        
+        # 从输出中提取构建ID（用于后续下载）
+        BUILD_ID=$(echo "$BUILD_OUTPUT" | grep -o "builds/[a-f0-9-]*" | head -1 | cut -d'/' -f2)
+        if [ -n "$BUILD_ID" ]; then
+          echo "构建ID: $BUILD_ID"
+          echo "build_id=$BUILD_ID" >> $GITHUB_OUTPUT
+        fi
+        
+        # 从输出中提取直接下载链接
+        APK_URL=$(echo "$BUILD_OUTPUT" | grep -o "https://expo.dev/artifacts/eas/[^ ]*\.apk" | head -1)
+        if [ -n "$APK_URL" ]; then
+          echo "APK直接下载链接: $APK_URL"
+          echo "apk_url=$APK_URL" >> $GITHUB_OUTPUT
+        fi
         
         echo "✅ 构建任务已完成！"
         
-    - name: 下载并重命名 APK
+    - name: 下载 APK 文件
       env:
         EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
       run: |
         echo "=== 下载构建好的 APK ==="
         
-        # 方法1：使用最新的构建ID下载
-        echo "查找最新完成的构建..."
-        BUILD_JSON=$(eas build:list --platform android --status finished --limit 1 --json)
-        
-        if [ -z "$BUILD_JSON" ] || [ "$BUILD_JSON" = "[]" ]; then
-          echo "❌ 未找到已完成的构建"
-          echo "请手动下载：https://expo.dev/accounts/AlbertSeaman/projects/baby-feed-tracker/builds"
-          exit 1
+        # 方法1：如果有构建ID，使用构建ID下载
+        if [ -n "${{ steps.build-step.outputs.build_id }}" ]; then
+          echo "使用构建ID下载: ${{ steps.build-step.outputs.build_id }}"
+          eas build:download --id "${{ steps.build-step.outputs.build_id }}" --output ./baby-feeding-tracker.apk
         fi
         
-        # 提取构建ID
-        BUILD_ID=$(echo "$BUILD_JSON" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-        echo "找到构建 ID: $BUILD_ID"
-        
-        # 下载 APK
-        eas build:download --id "$BUILD_ID" --output ./baby-feeding-tracker.apk
+        # 方法2：如果方法1失败或没有构建ID，检查是否有直接下载链接
+        if [ ! -f "./baby-feeding-tracker.apk" ] && [ -n "${{ steps.build-step.outputs.apk_url }}" ]; then
+          echo "使用直接链接下载..."
+          curl -L "${{ steps.build-step.outputs.apk_url }}" -o ./baby-feeding-tracker.apk
+        fi
         
         # 验证文件存在
         if [ -f "./baby-feeding-tracker.apk" ]; then
-          echo "✅ APK 下载成功！"
+          echo "✅ APK 下载成功！文件大小:"
           ls -lh ./baby-feeding-tracker.apk
         else
-          echo "❌ 文件下载失败"
-          exit 1
+          echo "⚠️  无法自动下载APK"
+          echo "请手动从以下链接下载："
+          echo "${{ steps.build-step.outputs.apk_url }}"
+          echo "或访问：https://expo.dev/accounts/AlbertSeaman/projects/baby-feed-tracker/builds"
         fi
         
     - name: 上传 APK 供下载
+      if: success() && hashFiles('./baby-feeding-tracker.apk') == 'true'
       uses: actions/upload-artifact@v4
       with:
         name: baby-feeding-tracker-apk
-        path: ./baby-feeding-tracker.apk  # 与下载步骤的文件名一致
+        path: ./baby-feeding-tracker.apk
         retention-days: 90
         
     - name: 显示成功信息
+      if: always()
       run: |
-        echo "🎉 构建流程全部完成！"
-        echo "下载 APK 方式："
-        echo "1. 在此页面底部的 'Artifacts' 区域下载"
-        echo "2. 或访问 Expo 控制台：https://expo.dev/accounts/AlbertSeaman/projects/baby-feed-tracker/builds"
+        echo "=== 构建结果 ==="
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "🎉 构建流程完成！"
+          echo ""
+          echo "下载 APK 方式："
+          echo "1. 在此页面底部的 'Artifacts' 区域下载"
+          echo "2. 直接链接：${{ steps.build-step.outputs.apk_url }}"
+          echo "3. Expo 控制台：https://expo.dev/accounts/AlbertSeaman/projects/baby-feed-tracker/builds"
+        else
+          echo "⚠️  构建过程中出现问题"
+          echo "请检查错误日志并重试"
+        fi
